@@ -1,4 +1,4 @@
-export function ChartSelector({ selectedMetric, onMetricChange, selectedDevice, onDeviceChange, devices }) {
+export function ChartSelector({ selectedMetric, onMetricChange, selectedDevice, onDeviceChange, devices, activeTab }) {
   const metrics = [
     { value: 'power', label: 'Power (W)' },
     { value: 'voltage', label: 'Voltage (V)' },
@@ -32,13 +32,16 @@ export function ChartSelector({ selectedMetric, onMetricChange, selectedDevice, 
         <div className="flex-1">
           <label className="block text-sm font-medium text-gray-700 mb-2">
             Device Filter
+            <span className="text-xs text-gray-500 ml-2">
+              (Showing {activeTab} devices)
+            </span>
           </label>
           <select
             value={selectedDevice}
             onChange={(e) => onDeviceChange(e.target.value)}
             className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
           >
-            <option value="">All Devices (Combined)</option>
+            <option value="">All {activeTab} Devices (Combined)</option>
             {devices.map(device => (
               <option key={device} value={device}>
                 {device}

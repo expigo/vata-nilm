@@ -6,9 +6,11 @@ export function DeviceCard({ deviceId, siteType, timestamp, data }) {
   const getStatus = () => {
     if (!timestamp) return 'offline';
     const secondsAgo = (Date.now() - new Date(timestamp)) / 1000;
-    if (secondsAgo < 10) return 'online';
-    if (secondsAgo < 60) return 'warning';
-    return 'offline';
+    
+    // More forgiving thresholds for devices with delays
+    if (secondsAgo < 30) return 'online';      // Green: <30 seconds
+    if (secondsAgo < 120) return 'warning';    // Yellow: 30s-2min
+    return 'offline';                           // Red: >2 minutes
   };
 
   const status = getStatus();
@@ -28,6 +30,11 @@ export function DeviceCard({ deviceId, siteType, timestamp, data }) {
   const voltage = data?.['NMID_1-18']?.slice(0, 3) || [0, 0, 0];
   const current = data?.['NMID_1-18']?.slice(3, 6) || [0, 0, 0];
   const power = data?.['NMID_1-18']?.slice(6, 9) || [0, 0, 0];
+  
+  // Calculate totals
+  const totalPower = power[0] + power[1] + power[2];
+  const avgVoltage = (voltage[0] + voltage[1] + voltage[2]) / 3;
+  const totalCurrent = current[0] + current[1] + current[2];
 
   return (
     <div className={`border-2 rounded-lg p-4 ${statusColors[status]} transition-all hover:shadow-md`}>
@@ -43,6 +50,25 @@ export function DeviceCard({ deviceId, siteType, timestamp, data }) {
         Updated {timeAgo}
       </p>
 
+      {/* Summary Stats */}
+      <div className="mb-3 p-2 bg-white bg-opacity-50 rounded">
+        <div className="grid grid-cols-3 gap-2 text-xs">
+          <div>
+            <p className="font-medium text-gray-600">Total Power</p>
+            <p className="text-lg font-bold">{totalPower.toFixed(0)} W</p>
+          </div>
+          <div>
+            <p className="font-medium text-gray-600">Avg Voltage</p>
+            <p className="text-lg font-bold">{avgVoltage.toFixed(0)} V</p>
+          </div>
+          <div>
+            <p className="font-medium text-gray-600">Total Current</p>
+            <p className="text-lg font-bold">{totalCurrent.toFixed(1)} A</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Detailed Metrics */}
       <div className="space-y-2 text-sm">
         <div>
           <p className="font-medium text-gray-700">Voltage (V)</p>

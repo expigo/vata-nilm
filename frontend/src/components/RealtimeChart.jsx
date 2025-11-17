@@ -2,20 +2,18 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, Responsi
 import { format } from 'date-fns';
 
 export function RealtimeChart({ messages, deviceId, metric = 'power' }) {
-  // Filter messages for specific device if deviceId provided
   const filteredMessages = deviceId 
     ? messages.filter(msg => (msg.device_id || msg.deviceId) === deviceId)
     : messages;
 
-  // Take last 20 messages and reverse for chronological order
+  // Take last 30 messages for better visibility
   const chartData = filteredMessages
-    .slice(0, 20)
+    .slice(0, 30)
     .reverse()
     .map(msg => {
       const data = msg.raw_json || msg.data || {};
       const timestamp = new Date(msg.timestamp);
       
-      // Extract metrics based on type
       let values = {};
       
       if (metric === 'power') {
@@ -53,17 +51,20 @@ export function RealtimeChart({ messages, deviceId, metric = 'power' }) {
     power: {
       title: 'Power (W)',
       lines: ['L1', 'L2', 'L3', 'total'],
-      colors: ['#3b82f6', '#10b981', '#f59e0b', '#ef4444']
+      colors: ['#3b82f6', '#10b981', '#f59e0b', '#ef4444'],
+      labels: ['L1', 'L2', 'L3', 'Total']
     },
     voltage: {
       title: 'Voltage (V)',
       lines: ['L1', 'L2', 'L3'],
-      colors: ['#3b82f6', '#10b981', '#f59e0b']
+      colors: ['#3b82f6', '#10b981', '#f59e0b'],
+      labels: ['L1', 'L2', 'L3']
     },
     current: {
       title: 'Current (A)',
       lines: ['L1', 'L2', 'L3'],
-      colors: ['#3b82f6', '#10b981', '#f59e0b']
+      colors: ['#3b82f6', '#10b981', '#f59e0b'],
+      labels: ['L1', 'L2', 'L3']
     }
   };
 
@@ -81,13 +82,16 @@ export function RealtimeChart({ messages, deviceId, metric = 'power' }) {
           Waiting for data...
         </div>
       ) : (
-        <ResponsiveContainer width="100%" height={300}>
-          <LineChart data={chartData}>
+        <ResponsiveContainer width="100%" height={400}>
+          <LineChart data={chartData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
             <XAxis 
               dataKey="time" 
               stroke="#6b7280"
               style={{ fontSize: '12px' }}
+              angle={-45}
+              textAnchor="end"
+              height={80}
             />
             <YAxis 
               stroke="#6b7280"
@@ -97,18 +101,23 @@ export function RealtimeChart({ messages, deviceId, metric = 'power' }) {
               contentStyle={{ 
                 backgroundColor: '#fff',
                 border: '1px solid #e5e7eb',
-                borderRadius: '6px'
+                borderRadius: '6px',
+                fontSize: '13px'
               }}
             />
-            <Legend />
+            <Legend 
+              wrapperStyle={{ paddingTop: '10px' }}
+            />
             {config.lines.map((line, index) => (
               <Line
                 key={line}
+                name={config.labels[index]}
                 type="monotone"
                 dataKey={line}
                 stroke={config.colors[index]}
                 strokeWidth={2}
-                dot={false}
+                dot={{ fill: config.colors[index], r: 4 }}
+                activeDot={{ r: 6 }}
                 animationDuration={300}
               />
             ))}
@@ -117,7 +126,7 @@ export function RealtimeChart({ messages, deviceId, metric = 'power' }) {
       )}
       
       <p className="text-xs text-gray-500 mt-2 text-center">
-        Last 20 data points • Updates in real-time
+        Last 30 data points • Updates in real-time
       </p>
     </div>
   );

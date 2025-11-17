@@ -32,10 +32,16 @@ export function useWebSocket(url) {
           
           if (data.type === 'initial_state' || data.type === 'subscription_update') {
             console.log(`📦 Received ${data.count} initial messages`);
-            setMessages(data.data || []);
+            // Limit to last 50 messages to prevent memory issues
+            setMessages((data.data || []).slice(0, 50));
           } else if (data.type === 'new_message') {
             setLastMessage(data);
-            setMessages(prev => [data, ...prev].slice(0, 100));
+            // Keep only last 50 messages, remove oldest
+            setMessages(prev => {
+              const updated = [data, ...prev];
+              // Limit to 50 messages to prevent memory leak
+              return updated.slice(0, 50);
+            });
           }
         } catch (err) {
           console.error('Error parsing WebSocket message:', err);

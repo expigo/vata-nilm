@@ -1,10 +1,12 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useWebSocket } from './hooks/useWebSocket';
 import { SiteTabs } from './components/SiteTabs';
 import { DeviceCard } from './components/DeviceCard';
 import { ConnectionStatus } from './components/ConnectionStatus';
 import { RealtimeChart } from './components/RealtimeChart';
 import { ChartSelector } from './components/ChartSelector';
+import { InfoPanel } from './components/InfoPanel';
+import { DebugPanel } from './components/DebugPanel';
 
 function App() {
   const [activeTab, setActiveTab] = useState('ALL');
@@ -16,18 +18,35 @@ function App() {
 
   useEffect(() => {
     subscribe(activeTab);
+    setSelectedDevice('');
   }, [activeTab, subscribe]);
 
-  const deviceMap = new Map();
-  messages.forEach(msg => {
-    const deviceId = msg.device_id || msg.deviceId;
-    if (!deviceMap.has(deviceId) || new Date(msg.timestamp) > new Date(deviceMap.get(deviceId).timestamp)) {
-      deviceMap.set(deviceId, msg);
-    }
-  });
+  const { devices, deviceIds } = useMemo(() => {
+    const deviceMap = new Map();
+    
+    const filteredMessages = messages.filter(msg => {
+      const siteType = msg.site_type || msg.siteType;
+      if (activeTab === 'ALL') return true;
+      return siteType === activeTab;
+    });
+    
+    filteredMessages.forEach(msg => {
+      const deviceId = msg.device_id || msg.deviceId;
+      if (!deviceMap.has(deviceId) || new Date(msg.timestamp) > new Date(deviceMap.get(deviceId).timestamp)) {
+        deviceMap.set(deviceId, msg);
+      }
+    });
 
-  const devices = Array.from(deviceMap.values());
-  const deviceIds = devices.map(d => d.device_id || d.deviceId);
+    const sortedDevices = Array.from(deviceMap.values()).sort((a, b) => {
+      const idA = a.device_id || a.deviceId;
+      const idB = b.device_id || b.deviceId;
+      return idA.localeCompare(idB);
+    });
+
+    const ids = sortedDevices.map(d => d.device_id || d.deviceId);
+
+    return { devices: sortedDevices, deviceIds: ids };
+  }, [messages, activeTab]);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -65,13 +84,15 @@ function App() {
           </div>
         </div>
 
-        {/* Chart Section */}
+        <InfoPanel />
+
         <ChartSelector
           selectedMetric={selectedMetric}
           onMetricChange={setSelectedMetric}
           selectedDevice={selectedDevice}
           onDeviceChange={setSelectedDevice}
           devices={deviceIds}
+          activeTab={activeTab}
         />
 
         <RealtimeChart
@@ -80,7 +101,6 @@ function App() {
           metric={selectedMetric}
         />
 
-        {/* Device Cards Grid */}
         <div className="mt-8">
           <h2 className="text-xl font-semibold text-gray-900 mb-4">Device Status</h2>
           {devices.length === 0 ? (
@@ -104,6 +124,9 @@ function App() {
           )}
         </div>
       </main>
+
+      {/* Debug Panel - shows memory usage */}
+      <DebugPanel messageCount={messages.length} deviceCount={devices.length} />
     </div>
   );
 }
