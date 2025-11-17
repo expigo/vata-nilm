@@ -3,9 +3,13 @@ import { useWebSocket } from './hooks/useWebSocket';
 import { SiteTabs } from './components/SiteTabs';
 import { DeviceCard } from './components/DeviceCard';
 import { ConnectionStatus } from './components/ConnectionStatus';
+import { RealtimeChart } from './components/RealtimeChart';
+import { ChartSelector } from './components/ChartSelector';
 
 function App() {
   const [activeTab, setActiveTab] = useState('ALL');
+  const [selectedMetric, setSelectedMetric] = useState('power');
+  const [selectedDevice, setSelectedDevice] = useState('');
   const wsUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:3002';
   
   const { isConnected, messages, error, subscribe } = useWebSocket(wsUrl);
@@ -23,6 +27,7 @@ function App() {
   });
 
   const devices = Array.from(deviceMap.values());
+  const deviceIds = devices.map(d => d.device_id || d.deviceId);
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -60,25 +65,44 @@ function App() {
           </div>
         </div>
 
-        {devices.length === 0 ? (
-          <div className="bg-white rounded-lg border border-gray-200 p-8 text-center">
-            <p className="text-gray-500">
-              {isConnected ? 'Waiting for data...' : 'Connecting to server...'}
-            </p>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {devices.map((device) => (
-              <DeviceCard
-                key={device.device_id || device.deviceId}
-                deviceId={device.device_id || device.deviceId}
-                siteType={device.site_type || device.siteType}
-                timestamp={device.timestamp}
-                data={device.raw_json || device.data}
-              />
-            ))}
-          </div>
-        )}
+        {/* Chart Section */}
+        <ChartSelector
+          selectedMetric={selectedMetric}
+          onMetricChange={setSelectedMetric}
+          selectedDevice={selectedDevice}
+          onDeviceChange={setSelectedDevice}
+          devices={deviceIds}
+        />
+
+        <RealtimeChart
+          messages={messages}
+          deviceId={selectedDevice}
+          metric={selectedMetric}
+        />
+
+        {/* Device Cards Grid */}
+        <div className="mt-8">
+          <h2 className="text-xl font-semibold text-gray-900 mb-4">Device Status</h2>
+          {devices.length === 0 ? (
+            <div className="bg-white rounded-lg border border-gray-200 p-8 text-center">
+              <p className="text-gray-500">
+                {isConnected ? 'Waiting for data...' : 'Connecting to server...'}
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {devices.map((device) => (
+                <DeviceCard
+                  key={device.device_id || device.deviceId}
+                  deviceId={device.device_id || device.deviceId}
+                  siteType={device.site_type || device.siteType}
+                  timestamp={device.timestamp}
+                  data={device.raw_json || device.data}
+                />
+              ))}
+            </div>
+          )}
+        </div>
       </main>
     </div>
   );
