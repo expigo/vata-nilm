@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import cookieParser from 'cookie-parser';
 import { getDeviceList, getLatestMessages } from './db.js';
 import { getStats as getMqttStats } from './mqtt.js';
 import { getConnectedClients } from './websocket.js';
@@ -12,14 +13,53 @@ import {
   dismissAlert,
   resolveAlert
 } from './alerts.js';
+import {
+  authenticateUser,
+  logoutUser,
+  verifySession,
+  getUserById,
+  getAllUsers,
+  createUser,
+  updateUser,
+  deleteUser,
+  changePassword,
+  getUserPreferences,
+  updateUserPreferences,
+  getAccessibleSites
+} from './auth.js';
+import {
+  authenticate,
+  requireRole,
+  filterSiteAccess,
+  optionalAuth,
+  rateLimit
+} from './authMiddleware.js';
+import {
+  getHistoricalData,
+  getEnergyAnalysis,
+  getPowerQualityAnalysis,
+  getAnomaliesAnalysis,
+  getAlertAnalysis,
+  getDeviceStatistics,
+  generateReport,
+  saveReport,
+  getSavedReports,
+  getSavedReportById,
+  deleteSavedReport,
+  getComparisonData
+} from './historical.js';
 import pool from './db.js';
 
 export function createAPIServer(port = 3001) {
   const app = express();
-  
+
   // Middleware
-  app.use(cors());
+  app.use(cors({
+    origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+    credentials: true
+  }));
   app.use(express.json());
+  app.use(cookieParser());
   
   // Health check
   app.get('/api/health', (req, res) => {
@@ -32,9 +72,581 @@ export function createAPIServer(port = 3001) {
       }
     });
   });
-  
-  // Get all devices
-  app.get('/api/devices', async (req, res) => {
+
+  // ============================================================================
+  // AUTHENTICATION ENDPOINTS
+  // ============================================================================
+
+  // Login
+  app.post('/api/auth/login', rateLimit(), async (req, res) => {
+    try {
+      const { username, password } = req.body;
+      const ipAddress = req.ip || req.connection.remoteAddress;
+      const userAgent = req.headers['user-agent'];
+
+      if (!username || !password) {
+        return res.status(400).json({
+          success: false,
+          error: 'Username and password are required'
+        });
+      }
+
+      const authResult = await authenticateUser(username, password, ipAddress, userAgent);
+
+      // Set HTTP-only cookie for token
+      res.cookie('token', authResult.token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'strict',
+        maxAge: 24 * 60 * 60 * 1000 // 24 hours
+      });
+
+      res.json({
+        success: true,
+        user: authResult.user,
+        token: authResult.token,
+        refreshToken: authResult.refreshToken
+      });
+    } catch (error) {
+      console.error('Login error:', error);
+      res.status(401).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Logout
+  app.post('/api/auth/logout', authenticate, async (req, res) => {
+    try {
+      await logoutUser(req.user.id);
+      res.clearCookie('token');
+
+      res.json({
+        success: true,
+        message: 'Logged out successfully'
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Get current user
+  app.get('/api/auth/me', authenticate, async (req, res) => {
+    try {
+      const user = await getUserById(req.user.id);
+      const preferences = await getUserPreferences(req.user.id);
+
+      res.json({
+        success: true,
+        user: {
+          ...user,
+          preferences
+        }
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Verify session (check if logged in)
+  app.get('/api/auth/verify', optionalAuth, (req, res) => {
+    if (req.user) {
+      res.json({
+        success: true,
+        authenticated: true,
+        user: req.user
+      });
+    } else {
+      res.json({
+        success: true,
+        authenticated: false
+      });
+    }
+  });
+
+  // ============================================================================
+  // USER MANAGEMENT ENDPOINTS (ADMIN ONLY)
+  // ============================================================================
+
+  // Get all users
+  app.get('/api/users', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+      const users = await getAllUsers();
+
+      res.json({
+        success: true,
+        count: users.length,
+        users
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Create user
+  app.post('/api/users', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+      const user = await createUser({
+        ...req.body,
+        createdBy: req.user.id
+      });
+
+      res.status(201).json({
+        success: true,
+        user
+      });
+    } catch (error) {
+      res.status(400).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Update user
+  app.put('/api/users/:userId', authenticate, requireRole('admin', 'manager'), async (req, res) => {
+    try {
+      const { userId } = req.params;
+
+      // Users can only update themselves unless they're admin
+      if (req.user.role !== 'admin' && req.user.id !== parseInt(userId)) {
+        return res.status(403).json({
+          success: false,
+          error: 'You can only update your own profile'
+        });
+      }
+
+      const user = await updateUser(parseInt(userId), req.body);
+
+      res.json({
+        success: true,
+        user
+      });
+    } catch (error) {
+      res.status(400).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Change password
+  app.post('/api/users/:userId/password', authenticate, async (req, res) => {
+    try {
+      const { userId } = req.params;
+      const { currentPassword, newPassword } = req.body;
+
+      // Users can only change their own password
+      if (req.user.id !== parseInt(userId)) {
+        return res.status(403).json({
+          success: false,
+          error: 'You can only change your own password'
+        });
+      }
+
+      await changePassword(parseInt(userId), currentPassword, newPassword);
+
+      res.json({
+        success: true,
+        message: 'Password changed successfully'
+      });
+    } catch (error) {
+      res.status(400).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Delete user
+  app.delete('/api/users/:userId', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+      const { userId } = req.params;
+      const deleted = await deleteUser(parseInt(userId));
+
+      res.json({
+        success: true,
+        deleted
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Get user preferences
+  app.get('/api/users/:userId/preferences', authenticate, async (req, res) => {
+    try {
+      const { userId } = req.params;
+
+      if (req.user.id !== parseInt(userId)) {
+        return res.status(403).json({
+          success: false,
+          error: 'You can only view your own preferences'
+        });
+      }
+
+      const preferences = await getUserPreferences(parseInt(userId));
+
+      res.json({
+        success: true,
+        preferences
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Update user preferences
+  app.put('/api/users/:userId/preferences', authenticate, async (req, res) => {
+    try {
+      const { userId } = req.params;
+
+      if (req.user.id !== parseInt(userId)) {
+        return res.status(403).json({
+          success: false,
+          error: 'You can only update your own preferences'
+        });
+      }
+
+      const preferences = await updateUserPreferences(parseInt(userId), req.body);
+
+      res.json({
+        success: true,
+        preferences
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // ============================================================================
+  // HISTORICAL DATA ENDPOINTS
+  // ============================================================================
+
+  // Get historical raw data
+  app.get('/api/historical/data', authenticate, filterSiteAccess, async (req, res) => {
+    try {
+      const filters = {
+        siteType: req.query.siteType || req.user.siteAccess,
+        deviceIds: req.query.deviceIds ? req.query.deviceIds.split(',') : null,
+        startDate: req.query.startDate,
+        endDate: req.query.endDate,
+        limit: parseInt(req.query.limit) || 1000,
+        offset: parseInt(req.query.offset) || 0
+      };
+
+      const data = await getHistoricalData(filters);
+
+      res.json({
+        success: true,
+        count: data.length,
+        filters,
+        data
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Get energy analysis
+  app.get('/api/historical/energy', authenticate, filterSiteAccess, async (req, res) => {
+    try {
+      const filters = {
+        siteType: req.query.siteType || req.user.siteAccess,
+        deviceIds: req.query.deviceIds ? req.query.deviceIds.split(',') : null,
+        startDate: req.query.startDate,
+        endDate: req.query.endDate,
+        groupBy: req.query.groupBy || 'hour'
+      };
+
+      const data = await getEnergyAnalysis(filters);
+
+      res.json({
+        success: true,
+        count: data.length,
+        filters,
+        data
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Get power quality analysis
+  app.get('/api/historical/power-quality', authenticate, filterSiteAccess, async (req, res) => {
+    try {
+      const filters = {
+        siteType: req.query.siteType || req.user.siteAccess,
+        deviceIds: req.query.deviceIds ? req.query.deviceIds.split(',') : null,
+        startDate: req.query.startDate,
+        endDate: req.query.endDate,
+        groupBy: req.query.groupBy || 'hour'
+      };
+
+      const data = await getPowerQualityAnalysis(filters);
+
+      res.json({
+        success: true,
+        count: data.length,
+        filters,
+        data
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Get anomalies analysis
+  app.get('/api/historical/anomalies', authenticate, filterSiteAccess, async (req, res) => {
+    try {
+      const filters = {
+        siteType: req.query.siteType || req.user.siteAccess,
+        deviceIds: req.query.deviceIds ? req.query.deviceIds.split(',') : null,
+        startDate: req.query.startDate,
+        endDate: req.query.endDate,
+        severity: req.query.severity,
+        anomalyType: req.query.anomalyType
+      };
+
+      const data = await getAnomaliesAnalysis(filters);
+
+      res.json({
+        success: true,
+        count: data.length,
+        filters,
+        data
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Get alert analysis
+  app.get('/api/historical/alerts', authenticate, filterSiteAccess, async (req, res) => {
+    try {
+      const filters = {
+        siteType: req.query.siteType || req.user.siteAccess,
+        deviceIds: req.query.deviceIds ? req.query.deviceIds.split(',') : null,
+        startDate: req.query.startDate,
+        endDate: req.query.endDate,
+        severity: req.query.severity,
+        state: req.query.state
+      };
+
+      const data = await getAlertAnalysis(filters);
+
+      res.json({
+        success: true,
+        count: data.length,
+        filters,
+        data
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Get device statistics
+  app.get('/api/historical/device-stats', authenticate, filterSiteAccess, async (req, res) => {
+    try {
+      const filters = {
+        siteType: req.query.siteType || req.user.siteAccess,
+        deviceIds: req.query.deviceIds ? req.query.deviceIds.split(',') : null,
+        startDate: req.query.startDate,
+        endDate: req.query.endDate
+      };
+
+      const data = await getDeviceStatistics(filters);
+
+      res.json({
+        success: true,
+        count: data.length,
+        filters,
+        data
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Generate report
+  app.post('/api/historical/reports/generate', authenticate, filterSiteAccess, async (req, res) => {
+    try {
+      const reportConfig = {
+        ...req.body,
+        siteType: req.body.siteType || req.user.siteAccess
+      };
+
+      const reportData = await generateReport(reportConfig);
+
+      res.json({
+        success: true,
+        reportData
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Save report
+  app.post('/api/historical/reports', authenticate, async (req, res) => {
+    try {
+      const { reportConfig, reportData } = req.body;
+
+      const saved = await saveReport(req.user.id, reportConfig, reportData);
+
+      res.json({
+        success: true,
+        report: saved
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Get saved reports
+  app.get('/api/historical/reports', authenticate, async (req, res) => {
+    try {
+      const reports = await getSavedReports(req.user.id);
+
+      res.json({
+        success: true,
+        count: reports.length,
+        reports
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Get saved report by ID
+  app.get('/api/historical/reports/:reportId', authenticate, async (req, res) => {
+    try {
+      const { reportId } = req.params;
+      const report = await getSavedReportById(parseInt(reportId), req.user.id);
+
+      if (!report) {
+        return res.status(404).json({
+          success: false,
+          error: 'Report not found or access denied'
+        });
+      }
+
+      res.json({
+        success: true,
+        report
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Delete saved report
+  app.delete('/api/historical/reports/:reportId', authenticate, async (req, res) => {
+    try {
+      const { reportId } = req.params;
+      const deleted = await deleteSavedReport(parseInt(reportId), req.user.id);
+
+      if (!deleted) {
+        return res.status(404).json({
+          success: false,
+          error: 'Report not found or access denied'
+        });
+      }
+
+      res.json({
+        success: true,
+        deleted
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Get comparison data
+  app.get('/api/historical/comparison', authenticate, filterSiteAccess, async (req, res) => {
+    try {
+      const filters = {
+        siteType: req.query.siteType || req.user.siteAccess,
+        deviceIds: req.query.deviceIds ? req.query.deviceIds.split(',') : null,
+        currentStart: req.query.currentStart,
+        currentEnd: req.query.currentEnd,
+        previousStart: req.query.previousStart,
+        previousEnd: req.query.previousEnd
+      };
+
+      const data = await getComparisonData(filters);
+
+      res.json({
+        success: true,
+        data
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // ============================================================================
+  // PROTECTED DATA ENDPOINTS
+  // ============================================================================
+
+  // Get all devices (now protected)
+  app.get('/api/devices', authenticate, filterSiteAccess, async (req, res) => {
     try {
       const devices = await getDeviceList();
       res.json({
@@ -50,8 +662,8 @@ export function createAPIServer(port = 3001) {
     }
   });
   
-  // Get latest data for a site type
-  app.get('/api/data/:siteType', async (req, res) => {
+  // Get latest data for a site type (now protected)
+  app.get('/api/data/:siteType', authenticate, filterSiteAccess, async (req, res) => {
     try {
       const { siteType } = req.params;
       const limit = parseInt(req.query.limit) || 50;
@@ -73,11 +685,11 @@ export function createAPIServer(port = 3001) {
   });
 
   // ============================================================================
-  // METRICS ENDPOINTS
+  // METRICS ENDPOINTS (PROTECTED)
   // ============================================================================
 
   // Get latest metrics for a device
-  app.get('/api/metrics/device/:deviceId', async (req, res) => {
+  app.get('/api/metrics/device/:deviceId', authenticate, async (req, res) => {
     try {
       const { deviceId } = req.params;
       const metrics = await getLatestMetrics(deviceId);
@@ -96,7 +708,7 @@ export function createAPIServer(port = 3001) {
   });
 
   // Get metrics history for a device
-  app.get('/api/metrics/history/:deviceId', async (req, res) => {
+  app.get('/api/metrics/history/:deviceId', authenticate, async (req, res) => {
     try {
       const { deviceId } = req.params;
       const hours = parseInt(req.query.hours) || 24;
@@ -120,7 +732,7 @@ export function createAPIServer(port = 3001) {
   });
 
   // Get metrics summary for all devices
-  app.get('/api/metrics/summary/:siteType?', async (req, res) => {
+  app.get('/api/metrics/summary/:siteType?', authenticate, filterSiteAccess, async (req, res) => {
     try {
       const siteType = req.params.siteType || 'ALL';
 
@@ -147,7 +759,7 @@ export function createAPIServer(port = 3001) {
   });
 
   // Get energy summary
-  app.get('/api/metrics/energy/:siteType?', async (req, res) => {
+  app.get('/api/metrics/energy/:siteType?', authenticate, filterSiteAccess, async (req, res) => {
     try {
       const siteType = req.params.siteType || 'ALL';
 
@@ -174,7 +786,7 @@ export function createAPIServer(port = 3001) {
   });
 
   // Get anomalies
-  app.get('/api/metrics/anomalies/:deviceId?', async (req, res) => {
+  app.get('/api/metrics/anomalies/:deviceId?', authenticate, async (req, res) => {
     try {
       const deviceId = req.params.deviceId;
       const hours = parseInt(req.query.hours) || 24;
@@ -217,11 +829,11 @@ export function createAPIServer(port = 3001) {
   });
 
   // ============================================================================
-  // ALERTS ENDPOINTS
+  // ALERTS ENDPOINTS (PROTECTED)
   // ============================================================================
 
   // Get active alerts
-  app.get('/api/alerts/active/:siteType?', async (req, res) => {
+  app.get('/api/alerts/active/:siteType?', authenticate, filterSiteAccess, async (req, res) => {
     try {
       const siteType = req.params.siteType || 'ALL';
       const limit = parseInt(req.query.limit) || 50;
@@ -243,7 +855,7 @@ export function createAPIServer(port = 3001) {
   });
 
   // Get alert history
-  app.get('/api/alerts/history', async (req, res) => {
+  app.get('/api/alerts/history', authenticate, filterSiteAccess, async (req, res) => {
     try {
       const filters = {
         deviceId: req.query.deviceId,
@@ -273,7 +885,7 @@ export function createAPIServer(port = 3001) {
   });
 
   // Get alert statistics
-  app.get('/api/alerts/statistics/:siteType?', async (req, res) => {
+  app.get('/api/alerts/statistics/:siteType?', authenticate, filterSiteAccess, async (req, res) => {
     try {
       const siteType = req.params.siteType || 'ALL';
       const hours = parseInt(req.query.hours) || 24;
@@ -295,7 +907,7 @@ export function createAPIServer(port = 3001) {
   });
 
   // Acknowledge alert
-  app.post('/api/alerts/:alertId/acknowledge', async (req, res) => {
+  app.post('/api/alerts/:alertId/acknowledge', authenticate, async (req, res) => {
     try {
       const { alertId } = req.params;
       const { acknowledgedBy, note } = req.body;
@@ -315,7 +927,7 @@ export function createAPIServer(port = 3001) {
   });
 
   // Dismiss alert
-  app.post('/api/alerts/:alertId/dismiss', async (req, res) => {
+  app.post('/api/alerts/:alertId/dismiss', authenticate, async (req, res) => {
     try {
       const { alertId } = req.params;
       const { dismissedBy, note } = req.body;
@@ -335,7 +947,7 @@ export function createAPIServer(port = 3001) {
   });
 
   // Resolve alert
-  app.post('/api/alerts/:alertId/resolve', async (req, res) => {
+  app.post('/api/alerts/:alertId/resolve', authenticate, async (req, res) => {
     try {
       const { alertId } = req.params;
       const { note, performedBy } = req.body;
@@ -355,7 +967,7 @@ export function createAPIServer(port = 3001) {
   });
 
   // Get alert rules
-  app.get('/api/alerts/rules', async (req, res) => {
+  app.get('/api/alerts/rules', authenticate, async (req, res) => {
     try {
       const enabled = req.query.enabled === 'true' ? true : req.query.enabled === 'false' ? false : null;
 
@@ -385,7 +997,7 @@ export function createAPIServer(port = 3001) {
   });
 
   // Create alert rule
-  app.post('/api/alerts/rules', async (req, res) => {
+  app.post('/api/alerts/rules', authenticate, requireRole('admin', 'manager'), async (req, res) => {
     try {
       const {
         name,
@@ -436,7 +1048,7 @@ export function createAPIServer(port = 3001) {
   });
 
   // Update alert rule
-  app.put('/api/alerts/rules/:ruleId', async (req, res) => {
+  app.put('/api/alerts/rules/:ruleId', authenticate, requireRole('admin', 'manager'), async (req, res) => {
     try {
       const { ruleId } = req.params;
       const updates = req.body;
@@ -476,7 +1088,7 @@ export function createAPIServer(port = 3001) {
   });
 
   // Delete alert rule
-  app.delete('/api/alerts/rules/:ruleId', async (req, res) => {
+  app.delete('/api/alerts/rules/:ruleId', authenticate, requireRole('admin', 'manager'), async (req, res) => {
     try {
       const { ruleId } = req.params;
 
