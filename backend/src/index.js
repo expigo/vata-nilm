@@ -3,6 +3,7 @@ import { testConnection } from './db.js';
 import { connectMQTT, disconnectMQTT } from './mqtt.js';
 import { createWebSocketServer, closeWebSocketServer } from './websocket.js';
 import { createAPIServer } from './api.js';
+import { initializeNotificationService } from './notifications.js';
 
 dotenv.config();
 
@@ -17,17 +18,21 @@ if (!dbConnected) {
   process.exit(1);
 }
 
+// Initialize notification service
+console.log('\n2️⃣ Initializing notification service...');
+initializeNotificationService();
+
 // Start MQTT subscriber
-console.log('\n2️⃣ Starting MQTT subscriber...');
+console.log('\n3️⃣ Starting MQTT subscriber...');
 const mqttClient = connectMQTT();
 
 // Start WebSocket server
-console.log('\n3️⃣ Starting WebSocket server...');
+console.log('\n4️⃣ Starting WebSocket server...');
 const wsPort = parseInt(process.env.WS_PORT) || 3002;
 createWebSocketServer(wsPort);
 
 // Start REST API server
-console.log('\n4️⃣ Starting REST API server...');
+console.log('\n5️⃣ Starting REST API server...');
 const apiPort = parseInt(process.env.API_PORT) || 3001;
 createAPIServer(apiPort);
 

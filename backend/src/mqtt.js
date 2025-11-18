@@ -1,6 +1,8 @@
 import mqtt from 'mqtt';
 import dotenv from 'dotenv';
 import { insertMessage, categorizeDevice } from './db.js';
+import { processMetrics } from './metrics.js';
+import { evaluateAlertRules } from './alerts.js';
 
 dotenv.config();
 
@@ -108,12 +110,28 @@ async function handleMessage(topic, message) {
     // Insert into database
     console.log(`   💾 Inserting into database...`);
     await insertMessage(messageData);
-    
+
     messageCount++;
     console.log(`✅ Message #${messageCount} processed successfully`);
-    
+
+    // Process metrics (power quality, energy, anomalies)
+    console.log(`   📊 Processing metrics...`);
+    const metrics = await processMetrics(messageData);
+    console.log(`   ✅ Metrics processed: ${metrics.anomalyCount} anomalies detected`);
+
+    // Evaluate alert rules
+    console.log(`   🔔 Evaluating alert rules...`);
+    const triggeredAlerts = await evaluateAlertRules(messageData);
+    if (triggeredAlerts.length > 0) {
+      console.log(`   ⚠️  ${triggeredAlerts.length} alert(s) triggered`);
+    }
+
     // Emit event for WebSocket broadcasting
-    mqttEvents.emit('newMessage', messageData);
+    mqttEvents.emit('newMessage', {
+      ...messageData,
+      metrics,
+      triggeredAlerts
+    });
     
   } catch (error) {
     errorCount++;

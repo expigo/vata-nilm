@@ -1,6 +1,7 @@
 import { WebSocketServer } from 'ws';
 import { mqttEvents } from './mqtt.js';
 import { getLatestMessages } from './db.js';
+import { notificationEvents } from './notifications.js';
 
 let wss = null;
 const clients = new Map(); // Track clients and their subscriptions
@@ -11,10 +12,13 @@ export function createWebSocketServer(port = 3002) {
   console.log(`🔌 WebSocket server listening on port ${port}`);
   
   wss.on('connection', handleConnection);
-  
+
   // Listen for new MQTT messages and broadcast
   mqttEvents.on('newMessage', broadcastMessage);
-  
+
+  // Listen for alert notifications and broadcast
+  notificationEvents.on('newNotification', broadcastNotification);
+
   return wss;
 }
 
@@ -97,17 +101,26 @@ function handleClientMessage(ws, data) {
 }
 
 function broadcastMessage(messageData) {
-  const { siteType, deviceId, timestamp, rawJson } = messageData;
-  
+  const { siteType, deviceId, timestamp, rawJson, metrics, triggeredAlerts } = messageData;
+
   // Prepare broadcast message
   const broadcastData = {
     type: 'new_message',
     siteType,
     deviceId,
     timestamp,
-    data: rawJson
+    data: rawJson,
+    metrics: metrics ? {
+      anomalyCount: metrics.anomalyCount,
+      powerQuality: metrics.powerQuality ? {
+        powerFactor: metrics.powerQuality.power_factor_total,
+        voltageImbalance: metrics.powerQuality.voltage_imbalance,
+        currentImbalance: metrics.powerQuality.current_imbalance
+      } : null
+    } : null,
+    alertCount: triggeredAlerts?.length || 0
   };
-  
+
   // Send to all connected clients with matching subscription
   let sentCount = 0;
   clients.forEach((client, ws) => {
@@ -119,13 +132,34 @@ function broadcastMessage(messageData) {
       }
     }
   });
-  
+
   if (sentCount > 0) {
     // Log occasionally
     if (Math.random() < 0.1) { // 10% of messages
       console.log(`📤 Broadcast message to ${sentCount} client(s)`);
     }
   }
+}
+
+/**
+ * Broadcast alert notification to all clients
+ */
+function broadcastNotification(notification) {
+  const { siteType } = notification;
+
+  // Send to all connected clients with matching subscription
+  let sentCount = 0;
+  clients.forEach((client, ws) => {
+    if (ws.readyState === ws.OPEN) {
+      // Send if client is subscribed to ALL or matching site type
+      if (client.subscription === 'ALL' || client.subscription === siteType) {
+        ws.send(JSON.stringify(notification));
+        sentCount++;
+      }
+    }
+  });
+
+  console.log(`🔔 Broadcast alert notification to ${sentCount} client(s): ${notification.title}`);
 }
 
 export function getConnectedClients() {
