@@ -1,14 +1,15 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 
-export function useWebSocket(url) {
+export function useWebSocket(url, options = {}) {
   const [isConnected, setIsConnected] = useState(false);
   const [messages, setMessages] = useState([]);
   const [lastMessage, setLastMessage] = useState(null);
   const [error, setError] = useState(null);
-  
+
   const ws = useRef(null);
   const reconnectTimeout = useRef(null);
   const currentSubscription = useRef('ALL');
+  const onAlertCallback = useRef(options.onAlert);
 
   const connect = useCallback(() => {
     try {
@@ -29,7 +30,7 @@ export function useWebSocket(url) {
       ws.current.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
-          
+
           if (data.type === 'initial_state' || data.type === 'subscription_update') {
             console.log(`📦 Received ${data.count} initial messages`);
             // Limit to last 50 messages to prevent memory issues
@@ -42,6 +43,12 @@ export function useWebSocket(url) {
               // Limit to 50 messages to prevent memory leak
               return updated.slice(0, 50);
             });
+          } else if (data.type === 'alert_triggered' || data.type === 'alert_resolved') {
+            // Handle alert notifications
+            console.log('🔔 Alert notification received:', data.title);
+            if (onAlertCallback.current) {
+              onAlertCallback.current(data);
+            }
           }
         } catch (err) {
           console.error('Error parsing WebSocket message:', err);
@@ -78,6 +85,11 @@ export function useWebSocket(url) {
       console.log(`📡 Subscribed to: ${siteType}`);
     }
   }, []);
+
+  // Update callback ref when it changes
+  useEffect(() => {
+    onAlertCallback.current = options.onAlert;
+  }, [options.onAlert]);
 
   useEffect(() => {
     connect();
