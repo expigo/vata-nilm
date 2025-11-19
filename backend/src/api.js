@@ -1107,6 +1107,267 @@ export function createAPIServer(port = 3001) {
     }
   });
 
+  // ============================================================================
+  // NILM ENDPOINTS (Energy Disaggregation)
+  // ============================================================================
+
+  const nilm = await import('./nilm.js');
+
+  // Check NILM service health
+  app.get('/api/nilm/health', async (req, res) => {
+    try {
+      const health = await nilm.checkNILMServiceHealth();
+      res.json(health);
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Real-time disaggregation
+  app.post('/api/nilm/disaggregate/realtime', authenticate, async (req, res) => {
+    try {
+      const { reading, algorithms } = req.body;
+
+      const results = await nilm.disaggregateRealtime(
+        reading,
+        algorithms,
+        req.user.id
+      );
+
+      res.json({
+        success: true,
+        results
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Historical disaggregation
+  app.post('/api/nilm/disaggregate/historical', authenticate, filterSiteAccess, async (req, res) => {
+    try {
+      const { deviceId, siteType, startTimestamp, endTimestamp, algorithms } = req.body;
+
+      const job = await nilm.disaggregateHistorical(
+        deviceId,
+        siteType || req.user.siteAccess,
+        startTimestamp,
+        endTimestamp,
+        algorithms,
+        req.user.id
+      );
+
+      res.json({
+        success: true,
+        job
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Get job status
+  app.get('/api/nilm/jobs/:jobId', authenticate, async (req, res) => {
+    try {
+      const { jobId } = req.params;
+      const status = await nilm.getJobStatus(jobId);
+
+      res.json({
+        success: true,
+        status
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Get appliances
+  app.get('/api/nilm/appliances', authenticate, filterSiteAccess, async (req, res) => {
+    try {
+      const { isGlobal } = req.query;
+      const siteType = req.query.siteType || req.user.siteAccess;
+
+      const result = await nilm.getAppliances(
+        req.user.id,
+        siteType,
+        isGlobal === 'true'
+      );
+
+      res.json(result);
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Get appliance categories
+  app.get('/api/nilm/appliances/categories', async (req, res) => {
+    try {
+      const result = await nilm.getApplianceCategories();
+      res.json(result);
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Create label
+  app.post('/api/nilm/labels', authenticate, async (req, res) => {
+    try {
+      const labelData = {
+        ...req.body,
+        user_id: req.user.id
+      };
+
+      const result = await nilm.createLabel(labelData);
+      res.json(result);
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Get user labels
+  app.get('/api/nilm/labels', authenticate, async (req, res) => {
+    try {
+      const { deviceId, applianceId } = req.query;
+
+      const result = await nilm.getUserLabels(
+        req.user.id,
+        deviceId,
+        applianceId ? parseInt(applianceId) : null
+      );
+
+      res.json(result);
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Get models
+  app.get('/api/nilm/models', authenticate, async (req, res) => {
+    try {
+      const { algorithm } = req.query;
+
+      const result = await nilm.getModels(algorithm, req.user.id);
+      res.json(result);
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Train model
+  app.post('/api/nilm/models/train', authenticate, requireRole('admin', 'manager'), async (req, res) => {
+    try {
+      const trainingConfig = {
+        ...req.body,
+        user_id: req.user.id
+      };
+
+      const job = await nilm.trainModel(trainingConfig);
+      res.json({
+        success: true,
+        job
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Get appliance statistics
+  app.get('/api/nilm/stats/appliances/:deviceId', authenticate, filterSiteAccess, async (req, res) => {
+    try {
+      const { deviceId } = req.params;
+      const { days, algorithm } = req.query;
+      const siteType = req.query.siteType || req.user.siteAccess;
+
+      const result = await nilm.getApplianceStats(
+        deviceId,
+        siteType,
+        days ? parseInt(days) : 30,
+        algorithm
+      );
+
+      res.json(result);
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Get algorithm performance
+  app.get('/api/nilm/stats/algorithms', authenticate, async (req, res) => {
+    try {
+      const result = await nilm.getAlgorithmPerformance();
+      res.json(result);
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Get available datasets
+  app.get('/api/nilm/datasets', authenticate, async (req, res) => {
+    try {
+      const result = await nilm.getAvailableDatasets();
+      res.json(result);
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
+  // Download dataset
+  app.post('/api/nilm/datasets/download', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+      const { datasetName } = req.body;
+      const result = await nilm.downloadDataset(datasetName);
+
+      res.json({
+        success: true,
+        result
+      });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error.message
+      });
+    }
+  });
+
   // Start server
   const server = app.listen(port, () => {
     console.log(`🚀 REST API server listening on port ${port}`);

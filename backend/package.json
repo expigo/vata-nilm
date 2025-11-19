@@ -20,6 +20,7 @@
     "express": "^5.1.0",
     "jsonwebtoken": "^9.0.2",
     "mqtt": "^5.14.1",
+    "node-fetch": "^3.3.2",
     "nodemailer": "^6.9.8",
     "pg": "^8.16.3",
     "ws": "^8.18.3"
